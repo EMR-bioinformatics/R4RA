@@ -21,7 +21,10 @@ This repository contains scripts to support the publication: 'Deep Molecular Pat
 - 2_Crossover Analysis: 3-way differential gene expression analysis on baseline synovial biopsies of patients that switched drug over time. Based on their response to different treatments, patients were classified as Pro-RTX, Pro-TOC, and Refractory (see Figure 2g of the paper).
 - 3_Longitudinal Analysis: longitudinal differential gene expression analysis using mixed-effects model. Genes that showed expression change over time were enriched via pathway analysis. 
 - 4_CDAI50_response_prediction: analysis to predict CDAI50% response to rituximab and tocilizumab using clinical variables and gene expression.
-  
+
+## Additional software packages
+
+For the purposes of this publication an R package was designed to model gene expression with a general linear mixed model (glmm). This is publicly available on [CRAN](https://cloud.r-project.org/web/packages/glmmSeq/index.html). The source code can be found [here](https://github.com/KatrionaGoldmann/glmmSeq). 
   
 ## Data exploration website
 
