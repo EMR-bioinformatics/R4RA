@@ -2,8 +2,8 @@
 
 This repo contains code for Digital Spatial Profiling (DSP) data analysis.
 
-DESeq2 R package was used for the preprocessing and DEG analysis.
-[Arjun Bhattacharya et al.] (https://www.ncbi.nlm.nih.gov/pmc/articles/PMC8138885/) justifies the usability of DESeq2 for NanoString data analysis: 
+DESeq2 R package was used for the preprocessing and DEG analysis. 
+[Arjun Bhattacharya et al.](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC8138885/) justifies the usability of DESeq2 for NanoString data analysis: 
 
 ### Directory Structure
 
