@@ -1,4 +1,4 @@
-# R4RAcell subset module scores
+# R4RA cell subset module scores
 
 
 This repo contains code for estimating relative abundance of cell subsets using module scores. 
