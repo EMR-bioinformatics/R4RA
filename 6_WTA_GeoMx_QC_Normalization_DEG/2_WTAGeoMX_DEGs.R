@@ -36,7 +36,7 @@ myData <- myData[,match(myannot$SegmentDisplayName, colnames(myData))]
 myannot$ROIs <- paste0("ROI_",myannot$ROI..label.)
 
 ####################################################
-############ Normalization & QC Chekcs #############
+############ Normalization & QC Checks #############
 ####################################################
 
 dds <- DESeqDataSetFromMatrix(countData = myData, colData = myannot, design = ~ Location)
