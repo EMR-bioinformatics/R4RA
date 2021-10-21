@@ -1,4 +1,4 @@
-# WTA GeoMx Data Analysis- QC, data normalization, differential expression analysis and visualisation of DEGs with volcano plot
+# WTA GeoMx Data Analysis - QC, data normalization, differential expression analysis and visualisation
 
 This repo contains code for Digital Spatial Profiling (DSP) data analysis
 DESeq2 R package was used for the preprocessing and DEG analysis.
