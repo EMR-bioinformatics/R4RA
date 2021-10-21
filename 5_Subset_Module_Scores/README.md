@@ -5,17 +5,19 @@ This repo contains code for estimating relative abundance of cell subsets using 
 The following subsets from [Zhang et al.](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6602051/) and [Alivernini et al.](https://www.nature.com/articles/s41591-020-0939-8) were analyzed:
 
 ---
-
+Fibroblasts
 *  SC-F1 = CD34+ sublining
 *  SC-F2 = HLA+ sublining
 *  SC-F3 = DKK3+ sublining
 *  SC-F4 = CD55+ lining
 
+Macrophages
 *  SC-M1 = IL1B+ pro-inflammatory
 *  SC-M2 = NUPR1+
 *  SC-M3 = C1QA+
 *  SC-M4 = IFN-activated
 
+T-cells
 *  SC-T1 = CCR7+ CD4+
 *  SC-T2 = FOXP3+ Tregs
 *  SC-T3 = PD-1+ Tph/Tfh
@@ -23,6 +25,7 @@ The following subsets from [Zhang et al.](https://www.ncbi.nlm.nih.gov/pmc/artic
 *  SC-T5 = GNLY+ GZMB+
 *  SC-T6 = GZMK+/GZMB+
 
+B-cells
 *  SC-B1 = IGHD+ CD270 naive
 *  SC-B2 = IGHG3+ CD27- memory
 *  SC-B3 = Autoimmune associated
