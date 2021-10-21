@@ -4,6 +4,8 @@
 This repo contains code for estimating relative abundance of cell subsets using module scores. 
 The following [Zhang et al.](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6602051/) and [Alivernini et al.](https://www.nature.com/articles/s41591-020-0939-8) subsets were analyzed:
 
+---
+
 *  SC-F1 = CD34+ sublining
 *  SC-F2 = HLA+ sublining
 *  SC-F3 = DKK3+ sublining
