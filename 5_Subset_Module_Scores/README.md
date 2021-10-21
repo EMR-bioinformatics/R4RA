@@ -38,7 +38,7 @@ The following [Zhang et al.](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC660205
 
 ```
 
-* **1\_Data\_Exploration** contains scripts for module score calculation, statistical comparison of module scores between responders and refractory patients and correlation of module scores with clinical variables
+* **1_calculate_subset_modules_bulk** contains scripts for module score calculation, statistical comparison of module scores between responders and refractory patients and correlation of module scores with clinical variables
 
 
 ---
