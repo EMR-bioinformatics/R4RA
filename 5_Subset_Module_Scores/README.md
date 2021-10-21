@@ -39,6 +39,3 @@ The following subsets from [Zhang et al.](https://www.ncbi.nlm.nih.gov/pmc/artic
 ```
 
 * **1_calculate_subset_modules_bulk** contains scripts for module score calculation, statistical comparison of module scores between responders and refractory patients and correlation of module scores with clinical variables
-
-
----
