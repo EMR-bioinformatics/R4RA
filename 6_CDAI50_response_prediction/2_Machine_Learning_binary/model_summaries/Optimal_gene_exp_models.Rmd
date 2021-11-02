@@ -1,0 +1,805 @@
+---
+title: "Best Gene Expression Models"
+author: "Katriona Goldmann"
+date: "8/19/2021"
+output: 
+ html_document: 
+  code_folding: hide
+  toc: yes
+  toc_float:
+      toc_collapsed: true
+---
+
+```{r setup, include=FALSE}
+library(ggplot2)
+library(kableExtra)
+library(plotROC)
+library(pROC)
+library(caret)
+library(ggpubr)
+library(DT)
+library(rmarkdown)
+library(tidyr)
+library(dplyr)
+library(gbm)
+set.seed(1234)
+
+knitr::opts_chunk$set(echo = TRUE, cache=FALSE, fig.width=14, 
+                      fig.height=10, warning = FALSE)
+```
+
+To annotate features you will need a [disGenNet api key](https://www.disgenet.org/api/). See ↓ to set up key
+
+```{r}
+# requires disGenNet credentials for gene annotations
+#devtools::install_github("KatrionaGoldmann/omicAnnotations")
+if(Sys.getenv("api_key_user") != "" & Sys.getenv("api_key_password") != "") {
+  api_key = omicAnnotations::get_api_key(Sys.getenv("api_key_user"), 
+                                         Sys.getenv("api_key_password"))
+} else {api_key = NULL}
+```
+
+
+# Scripts
+
+```{r}
+inner_folds_n=1
+
+# function to perform univariate filtering
+univariate_filtering = function(sdata, train_control, size){
+  filterCtrl <- sbfControl(functions = rfSBF)
+  
+  predictors = sdata[, colnames(sdata) != "resp"]
+  
+  rfe_out <- sbf(x = predictors,
+                 y = sdata$resp,
+                 sbfControl = filterCtrl,
+                 trControl=train_control)
+  
+  # subset by the number of times each feature is selected (min in size)
+  nsize = min(size, length(predictors(rfe_out)), na.rm=T)
+  min_n = min(sort(table(unlist(rfe_out$variables)), decreasing = T)[1:nsize]) # pick those which appear most
+  features = names(table(unlist(rfe_out$variables)))[table(unlist(rfe_out$variables)) >= min_n]
+  
+  subdata <- sdata[, c(features, "resp")]
+  return(subdata)
+}
+
+
+# function to perform filtering via recursive feature elimintation
+rfe_filtering = function(sdata, rfe_funcs, size, ml_method, 
+                         eval_metric="Accuracy", train_control){
+  rfe.ctrl = rfeControl(functions = rfe_funcs,
+                        #method = "repeatedcv",
+                        allowParallel =TRUE, 
+                        verbose = FALSE)
+  
+  predictors = sdata[, colnames(sdata) != "resp"]
+  
+  rfe_out <- rfe(x = predictors, 
+                 y = sdata$resp, 
+                 sizes = size,
+                 method=ml_method, 
+                 metric = eval_metric, 
+                 rfeControl = rfe.ctrl, 
+                 trControl=train_control)
+  
+  subdata <- sdata[, c(predictors(rfe_out), "resp")]
+  return(subdata)
+}
+
+clin_cols = c('TJC', 'SJC', 'CDAI', 'DAS28.CRP', 'DAS28.ESR', 'Age', 'Gender', 
+              'ESR', 'CRP', 'CD20', 'CD138', 'CD68L', 'CD68SL', 'CD3')
+
+
+# For each model output the summary stats, roc curves, variable importance
+outputs <- function(model, df3, header_level="####"){
+  
+  cat("\n\n\n\n</br></br>")  
+  cat("\n\n\n\n\n\n", header_level, " Model Summary\n")
+  
+  cat(paste("\n\n\U2022 Using", model$filtering, "filtering"))
+  cat(paste0("\n\n\U2022 Number of features in each fold: ", 
+             paste(lapply(model$models, function(x) length(x$selected_features)), 
+                   collapse=", ")))
+  cat(paste("\n\n\U2022 Average test AUC on outer folds <b>", 
+            format( model$auc, digit=3), "</b>"))
+  cat(paste("\n\n\U2022 Average balanced accuracy on outer folds <b>",
+            format(mean(model$df$Balanced.Accuracy), digit=3), "</b>\n\n\n"))
+  
+  all_folds = do.call(rbind, lapply(model$models, function(x) x$prob))
+  total_auc = auc(all_folds$observed, all_folds$R, levels=c("NR", "R"), direction="<")
+  cat(paste("\n\n\U2022 AUC on all test-set predictions from all outer folds<b>", 
+            format(total_auc, digits=3), "</b>\n\n"))
+  
+  
+  inner_folds = do.call(rbind, lapply(model$models, function(x) {
+    rfFit = x$fit
+    accuracy_lo = rfFit$results
+    lo_df = rfFit$pred
+    for(colu in colnames(rfFit$bestTune)){
+      accuracy_lo = accuracy_lo[accuracy_lo[, colu] == rfFit$bestTune[, colu], ]
+      lo_df = lo_df[lo_df[, colu] == rfFit$bestTune[, colu], ]
+    }
+    return(lo_df)
+  }))
+  inner_auc = auc(inner_folds$obs, inner_folds$R, levels=c("NR", "R"), direction="<")
+  cat(paste("\n\n\U2022 AUC on all left-out-set predictions from all outer folds<b>", 
+            format(inner_auc, digits=3), "</b>\n\n"))
+  
+  
+  model$df$mean_inner_n = unlist(lapply(model$models, function(x) {
+    length(which(varImp(x$fit)$importance$Overall != 0))
+  }))
+  
+  
+  # output the ROC curves
+  cat("\n\n\n\n\n\n", header_level, " ROC curves\n")
+  
+  po = ggplot(all_folds, aes(d = observed, m = R)) +
+    geom_roc(labels=F, pointsize=0, linemitre=1, color="dodgerblue") +
+    geom_abline(slope=1, intercept=0, color="grey60", linetype="dashed") + 
+    labs(x="1 - Specificity", y="Sensitivity", title = "Test Set") + 
+    annotate("text", x=1, y=0.1,  hjust = 1, size=5, 
+             label=paste0("AUC = ", format(total_auc, digits=3))) + 
+    theme_classic() + 
+    theme(text = element_text(size=15))
+  
+  pi = ggplot(inner_folds, aes(d = obs, m = R)) +
+    geom_roc(labels=F, pointsize=0, linemitre=1, color="gold2") +
+    geom_abline(slope=1, intercept=0, color="grey60", linetype="dashed") + 
+    labs(x="1 - Specificity", y="Sensitivity", title = "Left-Out Set") + 
+    theme_classic() + 
+    annotate("text", x=1, y=0.1,  hjust = 1, size=5, 
+             label=paste0("AUC = ", format(inner_auc, digits=3))) + 
+    theme(text = element_text(size=15))
+  
+  print(ggarrange(po, pi, ncol=2, nrow=1))
+  
+  # Interogate the feature data
+  feat = data.frame(table(unlist(lapply(model$models, function(x) x$selected_features))))
+  feat = feat[order(feat$Freq, decreasing = T), ]
+  feat = feat[feat$Freq > 1, ]
+  feat$type="Gene"
+  feat$type[feat$Var1 %in% clin_cols] = "Clinical"
+  
+  # Option to annotate the features
+  # df = omicAnnotations::gene_summary(feat$Var1, disease_api_token = api_key, 
+  #                                    gene_description = FALSE)
+  # feat = cbind(feat, df[match(feat$Var1, df$Gene),
+  #                      c("Type", "Curated_description", 
+  #                        "Associated_diseases")])
+  
+  cat("\n\n\n\n\n\n", header_level, " Features selected in each fold\n")
+  print(kable(feat, row.names = F) %>% kable_styling() %>% 
+          scroll_box(height = "400px"))
+  
+  mod = model$models
+  
+  bestTune = do.call(rbind, lapply(mod, function(x) x$fit$bestTune))
+  bestTune$k = unlist(lapply(model$models, function(x) {
+    length(which(varImp(x$fit)$importance != 0))
+  }))
+  
+  # Output the tuning parameters
+  cat("\n\n\n", header_level, " Best Tuned Parameters\n")
+  rownames(bestTune) = paste("Fold", 1:nrow(bestTune))
+  bestTune = rbind(bestTune, "Average"=apply(bestTune, 2, mean))
+  print(kable(bestTune) %>% kable_styling())
+  
+
+  # Set up the feature space
+  tvst <- data.frame(exp_sd)
+  # add response variable
+  tvst$resp = factor(clinical$CDAI50_toc_resp, labels=c("NR", "R"))
+  tvst = tvst[! is.na(tvst$resp), ]
+  
+  # train and fit on entire data set
+  train_control <- trainControl(method="none",
+                                classProbs = TRUE,
+                                savePredictions = TRUE)
+  
+  
+  # Filter and subset the data
+  if(model$filtering == "univariate"){
+    subdata = univariate_filtering(tvst, train_control,
+                                   size=as.numeric(gsub(".*\\_", "", model$info)))
+  } else if(model$filtering == "rfe"){
+    
+    subdata = rfe_filtering(tvst, rfe_funcs = caretFuncs,
+                            train_control = train_control, 
+                            ml_method = mod[[1]]$fit$method,
+                            eval_metric="Accuracy",
+                            size=as.numeric(gsub(".*\\_", "", model$info)))
+  } else{subdata = tvst}
+  
+  # degree must be an integer
+  if("degree" %in% colnames(bestTune)){
+    bestTune["Average", "degree"] = 
+      round(mean(bestTune[rownames(bestTune) != "Average", "degree"]))
+  }
+  
+  # fit on full data set
+  fit <- try(caret::train(resp ~.,
+                          data=subdata,
+                          method = mod[[1]]$fit$method,
+                          metric = "Accuracy",
+                          trControl = train_control,
+                          tuneGrid = bestTune["Average", colnames(bestTune) != 
+                                                "k", drop=F],
+                          preProcess=NULL))
+  
+  
+  if(class(fit) == "try-error"){
+    return(  return(list("test_roc"=po, "lo_roc"=pi,  
+                         "bestTune"=bestTune, "all"=model)))
+  } else {
+    # variable importance
+    vi = varImp(fit)
+    vi =  data.frame(as.matrix(vi$importance))
+    colnames(vi)[1] = "Overall"
+    vi$gene = rownames(vi)
+    vi = vi[order(abs(vi$Overall), decreasing = T), ]
+    
+    # Annotate features if api key is available
+    if(! is.null(api_key)){
+      df = omicAnnotations::gene_summary(gsub("\\.AS", "-AS",rownames(vi)),
+                                         disease_api_token = api_key,
+                                         gene_description = F)
+      vi = cbind(vi, df)
+    }
+    
+    cat("\n\n", header_level, " Variable Importance \n")
+    cat(paste("<b>Number of features importance !=0: ", 
+              length(which(vi$Overall != 0)), "</b>\n\n"))
+    print(kable(vi[, colnames(vi) != "Curated_description"], row.names = F) %>% 
+            kable_styling() %>% scroll_box(height = "400px"))
+    
+    vie = vi[vi$Overall != 0, ]
+    vie$gene = factor(vie$gene, levels=rev(unique(vie$gene)))
+    
+    p1 =  ggplot(vie, aes(y=Overall, x=gene)) +
+      geom_bar(stat="identity", fill="midnightblue") +
+      coord_flip() +
+      labs(y="Importance", x="") +
+      theme_classic() + 
+      theme(text=element_text(size=20), 
+            legend.position="none", 
+            panel.grid = element_line(colour = "grey92"),
+            panel.grid.minor = element_line(size = rel(0.5)), 
+            panel.grid.major = element_line(size = rel(0.7))) 
+    print(ggarrange(ggplot(data=NULL) + theme_void(), p1, ncol=3, 
+                    widths=c(1, 2, 1)))
+    
+    # If glmnet output the coefficient plot as well
+    if(mod[[1]]$fit$method == "glmnet"){
+      cat("\n\n", header_level, " Coefficients \n")
+      
+      tmp_coeffs <- coef(fit$finalModel, s = fit$bestTune$lambda)
+      
+      coefs = data.frame(as.matrix(tmp_coeffs))
+      colnames(coefs)="coef"
+      coefs$gene = rownames(coefs)
+      coefs = coefs[order(abs(coefs$coef), decreasing = T), ]
+      cat(paste("<b>Number of features following sparcity filter: ", 
+                length(which(coefs$coef != 0)), "</b>\n\n"))
+      
+      coefs[coefs == 0] = "."
+      print(kable(coefs, row.names = F) %>% kable_styling() %>% 
+              scroll_box(height = "400px"))
+      
+      coefs[coefs == "."] = 0
+      if(nrow(coefs) > 50) co = coefs[1:50, ]
+      co$gene = factor(co$gene, levels=rev(unique(co$gene)))
+      
+      co$dir = unlist(lapply(as.numeric(co$coef), function(x) x/abs(x)))
+      co = co[co$coef != 0, ]
+      
+      
+      p2 = ggplot(co, aes(y=as.numeric(coef), x=gene, fill=factor(dir))) +
+        geom_bar(stat="identity") +
+        scale_fill_manual(values=c("midnightblue", "firebrick1")) + 
+        coord_flip() +
+        labs(y="Coefficient", x="") +
+        theme_classic() + 
+        theme(text=element_text(size=20), 
+              legend.position = "none",
+              panel.grid = element_line(colour = "grey92"),
+              panel.grid.minor = element_line(size = rel(0.5)), 
+              panel.grid.major = element_line(size = rel(0.7))) 
+      
+      
+      print(ggarrange(ggplot(data=NULL) + theme_void(), p2, ncol=3, 
+                      widths=c(1, 2, 1)))
+    } else{
+      p2 = ggplot(data=NULL) + theme_void()
+      coefs=NULL
+    }
+    
+    return(list("test_roc"=po, "lo_roc"=pi, "variable_importance"=p1, 
+                "coefficients"=p2, "fit"=fit, "vi"=vi, "coef"=coefs, 
+                "bestTune"=bestTune, "all"=model))
+  }
+}
+
+```
+
+# Best Models at Final Timepoint
+
+
+```{r}
+load("/media/gcpeac/R4RA_machine_learning/Data/all_model_summaries_da.rdata")
+df2 = df[df$Set == "Test Stats", ]
+df2 = df2[! grepl("none", df2$filtering) | df2$model == "glmnet", ] # no filtering sparce only
+df2 = df2[df2$filtering != "rfe", ]
+
+df2 = df2[order(df2$n_input, decreasing = F), ]
+df2 = df2[order(df2$target_k, decreasing = T), ]
+df2 = df2[order(df2$AUC, decreasing = T), ]
+
+invisible(lapply(c("AUC", "Accuracy", "Balanced Accuracy", "Sensitivity", "Specificity"), function(x){
+  df2[, x] <<- format(as.numeric(df2[, x]), digits=3)
+}))
+
+
+df2$nominal_k = df2$target_k
+df2$target_k[df2$filtering == "none|none2"] = df2$n_input[df2$filtering == "none|none2"]
+
+
+kable(df2[, c('model', 'filtering', 'drug', 'Accuracy', 'AUC', 
+              'Balanced Accuracy', 'Sensitivity', 'Specificity', 
+              'Youden_sensitivity', 'Youden_specificity', 
+              'target_k', 'n_input')], row.names = F) %>% kable_styling()
+```
+
+```{r}
+u = df2
+
+invisible(lapply(1:nrow(u), function(x){
+  load(u$file[x], .GlobalEnv)
+  i = length(ls(pattern=u$drug[x], envir=.GlobalEnv))
+  assign(paste0(u$drug[x], stringr::str_pad(i+1, width=2, pad="0")), 
+         get(paste0("t_exp_and_clin_", u$filtering[x], "_", 
+                    u$model[x]))[[which(c("toc", "rtx", "any") == u$drug[x])]], 
+         envir=.GlobalEnv)
+}))
+
+df_final_response = df2
+
+gdata::keep(outputs, univariate_filtering, rfe_filtering, api_key, 
+            clin_cols, df_final_response, inner_folds_n,
+            list=c(ls(pattern="rtx"), ls(pattern="toc"), ls(pattern="any")), 
+            sure=T)
+load("/media/gcpeac/R4RA_machine_learning/Data/curated_input.rdata")
+```
+
+## Best TOC models {.tabset .tabset-fade}
+
+```{r, results='asis'}
+toc_other_filt_plots <- lapply(ls(pattern="toc")[! grepl("other", ls(pattern="toc"))], function(x) {
+  cat("\n\n")
+  cat(paste0("### Next Best TOC Model (", 
+             as.character(unique(get(x)$df$model)), 
+             ") {.tabset .tabset-fade} \n\n"))
+  temp = outputs(get(x))
+  cat("\n\n")
+  cat("### {.toc-ignore} \n\n")
+  return(temp)
+})
+```
+
+## {.toc-ignore}
+
+## Best RTX models {.tabset .tabset-fade}
+
+```{r, results='asis'}
+rtx_other_filt_plots <- lapply(ls(pattern="rtx")[! grepl("other", ls(pattern="rtx"))], function(x) {
+  cat("\n\n")
+  cat(paste0("### Next Best RTX Model (", 
+             as.character(unique(get(x)$df$model)), 
+             ") {.tabset .tabset-fade} \n\n"))
+  temp = outputs(get(x))
+  cat("\n\n")
+  cat("### {.toc-ignore} \n\n")
+  return(temp)
+})
+```
+
+## {.toc-ignore}
+
+## Best Refractory Model {.tabset .tabset-fade}
+
+```{r, results='asis'}
+any_other_filt_plots <- lapply(ls(pattern="any")[! grepl("other", ls(pattern="any"))], function(x) {
+  cat("\n\n")
+  cat(paste0("### Next Best Refractory Model (", 
+             as.character(unique(get(x)$df$model)), 
+             ") {.tabset .tabset-fade} \n\n"))
+  temp = outputs(get(x))
+  cat("\n\n")
+  cat("### {.toc-ignore} \n\n")
+  return(temp)
+})
+```
+
+## {.toc-ignore}
+
+## Overall Models Selected for Secondary Timepoint
+
+```{r}
+df_final_response$fold_k = df_final_response$final_k
+df_final_response$final_k = NA
+
+df_final_response$final_k[df_final_response$drug == "toc"] = unlist(lapply(toc_other_filt_plots, function(x) length(x$fit$coefnames)))
+df_final_response$final_k[df_final_response$drug == "rtx"]  = unlist(lapply(rtx_other_filt_plots, function(x) length(x$fit$coefnames)))
+df_final_response$final_k[df_final_response$drug == "any"] = unlist(lapply(any_other_filt_plots, function(x) length(x$fit$coefnames)))
+
+df_final_response$sparce_k = NA
+df_final_response$sparce_k[df_final_response$drug == "toc"] = unlist(lapply(toc_other_filt_plots, function(x) length(which(x$variable_importance$data$Overall != 0))))
+df_final_response$sparce_k[df_final_response$drug == "rtx"] = unlist(lapply(rtx_other_filt_plots, function(x) length(which(x$variable_importance$data$Overall != 0))))
+df_final_response$sparce_k[df_final_response$drug == "any"] = unlist(lapply(any_other_filt_plots, function(x) length(which(x$variable_importance$data$Overall != 0))))
+
+
+kable(df_final_response[, c('model', 'filtering', 'drug', 'Accuracy', 'AUC',
+                            'Balanced Accuracy', 'Sensitivity', 'Specificity',
+                            'target_k', 'final_k','sparce_k', 'n_input')], row.names = F) %>% kable_styling()
+
+```
+
+
+# Best Models at Initial Timepoint
+
+
+```{r}
+load("/media/gcpeac/R4RA_machine_learning/Data/all_baseline_model_summaries2.rdata")
+df2 = df[df$Set == "Test Stats", ]
+df2 = df2[! df2$filtering %in% c("none2", "none") | df2$model == "glmnet", ] # no filtering sparce only
+
+df2 = df2[order(df2$n_input, decreasing = F), ]
+df2 = df2[order(df2$AUC, decreasing = T), ]
+
+invisible(lapply(c("AUC", "Accuracy", "Balanced Accuracy", "Sensitivity", "Specificity"), function(x){
+  df2[, x] <<- format(as.numeric(df2[, x]), digits=3)
+}))
+
+df2$nominal_k = df2$target_k
+df2$target_k[df2$filtering == "none"] = df2$n_input[df2$filtering == "none"]
+
+df2 = unique(df2)
+
+kable(df2[, c('model', 'filtering', 'drug', 'Accuracy', 'AUC',
+              'Balanced Accuracy', 'Sensitivity', 'Specificity',
+              'target_k', 'final_k', 'n_input')], row.names = F) %>% kable_styling()
+```
+
+```{r}
+u = df2
+
+invisible(lapply(1:nrow(u), function(x){
+  load(u$file[x], .GlobalEnv)
+  i = length(ls(pattern=paste0(u$drug[x], "_bl"), envir=.GlobalEnv))
+  assign(paste0(u$drug[x], "_bl", stringr::str_pad(i+1, width=2, pad="0")), get(paste0("t_exp_and_clin_", u$filtering[x], "_", u$model[x]))[[which(c("toc", "rtx", "any") == u$drug[x])]], envir=.GlobalEnv)
+}))
+
+df_initial_response = df2
+
+gdata::keep(outputs, univariate_filtering, 
+            rfe_filtering, api_key, clin_cols, rtx_other_filt_plots, 
+            toc_filt_plots, any_filt_plots, df_final_response, inner_folds_n,
+            df_initial_response, list=c(ls(pattern="rtx"), ls(pattern="toc"), ls(pattern="any")), 
+            sure=T)
+load("/media/gcpeac/R4RA_machine_learning/Data/curated_input.rdata")
+```
+
+
+## Best TOC Initial models {.tabset .tabset-fade}
+
+```{r, results='asis'}
+toc_bl_other_filt_plots <- lapply(ls(pattern="toc_bl")[! grepl("other", ls(pattern="toc_bl"))], function(x) {
+  cat("\n\n")
+  cat(paste0("### Next Best Initial TOC Model (", 
+             as.character(unique(get(x)$df$model)), 
+             ") {.tabset .tabset-fade} \n\n"))
+  temp = outputs(get(x))
+  cat("\n\n")
+  cat("### {.toc-ignore} \n\n")
+  return(temp)
+})
+```
+
+## {.toc-ignore}
+
+
+
+## Best RTX Initial models {.tabset .tabset-fade}
+
+```{r, results='asis'}
+rtx_bl_other_filt_plots <- lapply(ls(pattern="rtx_bl")[! grepl("other", ls(pattern="rtx_bl"))], function(x) {
+  cat("\n\n")
+  cat(paste0("### Next Best Initial RTX Model (", 
+             as.character(unique(get(x)$df$model)), 
+             ") {.tabset .tabset-fade} \n\n"))
+  temp = outputs(get(x))
+  cat("\n\n")
+  cat("### {.toc-ignore} \n\n")
+  return(temp)
+})
+```
+
+## Overall Models Selected
+
+```{r}
+df_initial_response$fold_k = df_initial_response$final_k
+df_initial_response$final_k = NA
+
+df_initial_response$final_k[df_initial_response$drug == "toc"] = unlist(lapply(toc_bl_other_filt_plots, function(x) length(x$fit$coefnames)))
+df_initial_response$final_k[df_initial_response$drug == "rtx"] = unlist(lapply(rtx_bl_other_filt_plots, function(x) length(x$fit$coefnames)))
+
+df_initial_response$sparce_k = NA
+df_initial_response$sparce_k[df_initial_response$drug == "toc"] = unlist(lapply(toc_bl_other_filt_plots, function(x) length(which(x$variable_importance$data$Overall != 0))))
+df_initial_response$sparce_k[df_initial_response$drug == "rtx"] = unlist(lapply(rtx_bl_other_filt_plots, function(x) length(which(x$variable_importance$data$Overall != 0))))
+
+kable(df_initial_response[, c('model', 'filtering', 'drug', 'Accuracy', 'AUC',
+                              'Balanced Accuracy', 'Sensitivity', 'Specificity',
+                              'target_k', 'final_k','sparce_k', 'n_input')], row.names = F) %>% kable_styling()
+
+```
+
+## {.toc-ignore}
+
+# Overlapping Features
+
+Now lets see if there are any features common to multiple models. Currently these chunk are set to eval=FALSE, to run switch this to TRUE
+
+```{r, eval=FALSE}
+library(UpSetR)
+listInput <- list("Initial Rituximab" = as.character(rtx_bl_other_filt_plots[[1]]$variable_importance$data$gene),
+                  "Initial Tocilizumab" = as.character(toc_bl_other_filt_plots[[1]]$variable_importance$data$gene),
+                  "Final Rituximab" = as.character(rtx_other_filt_plots[[5]]$variable_importance$data$gene),
+                  "Final Tocilizumab" = as.character(toc_other_filt_plots[[1]]$variable_importance$data$gene),
+                  "Refractory" = as.character(any_other_filt_plots[[1]]$variable_importance$data$gene))
+
+qs1 = list(
+  list(query = UpSetR::intersects, params = list("Initial Rituximab"), color = "royalblue", active = T),
+  list(query = UpSetR::intersects, params = list("Initial Tocilizumab"), color = "gold2", active = T),
+  list(query = UpSetR::intersects, params = list("Initial Tocilizumab", "Initial Rituximab"),
+       color = "mediumseagreen", active = T)
+)
+
+qs = list(
+  # list(query = UpSetR::intersects, params = list("Final Rituximab"),
+  #      color = "royalblue", active = T)#,
+  list(query = UpSetR::intersects, params = list("Final Tocilizumab"),
+        color = "gold2", active = T),
+  list(query = UpSetR::intersects, params = list("Refractory"),
+        color = "firebrick1", active = T),
+  list(query = UpSetR::intersects, params = list("Final Tocilizumab", "Final Rituximab"),
+        color = "mediumseagreen", active = T),
+  list(query = UpSetR::intersects, params = list("Refractory", "Final Tocilizumab"),
+        color = "#db7918", active = T),
+  list(query = UpSetR::intersects, params = list("Refractory", "Final Rituximab"),
+        color = "darkorchid", active = T)
+)
+
+cat("The intersect between initial Toc and Rtx features: ",
+    paste(listInput[[1]], listInput[[2]], collapse=", "))
+cat("The intersect between final Toc and Rtx features: ",
+    paste(listInput[[3]], listInput[[4]], collapse=", "))
+
+upset(fromList(listInput[1:2]), order.by = "freq", queries = qs1,
+      text.scale = 2,
+      sets.bar.color = c("gold2", "royalblue"))
+
+upset(fromList(listInput[3:5]), order.by = "freq", text.scale = 2,
+      queries = qs,
+      main.bar.color = "darkgrey",
+      sets.bar.color = c("firebrick1",  "gold2", "royalblue"))
+```
+
+Overlap with nanostring
+
+```{r, eval=FALSE}
+ns = read.csv("/media/gcpeac/R4RA_machine_learning/Data/CDR-QMUL_1-44030_Design Data.tsv", sep="\t")
+
+listInput2 <- c(listInput, list("nanostring"=as.character(ns$Customer.Identifier)))
+
+
+
+upset(fromList(listInput2[c(1:2, 6)]), order.by = "freq",
+      text.scale = 2)
+
+upset(fromList(listInput2[3:6]), order.by = "freq", text.scale = 2,
+      main.bar.color = "darkgrey")
+
+
+cat("Nanostring genes which are also TOC features: ",
+    paste(listInput2$nanostring[listInput2$nanostring %in% unlist(listInput)], collapse=", "), "\n")
+cat("Nanostring genes which are also RTX features: ",
+    paste(listInput2$nanostring[listInput2$nanostring %in% c(listInput$`Initial Rituximab`, listInput$`Final Rituximab`)], collapse=", "), "\n")
+
+
+notoc=unique(c(listInput$`Initial Tocilizumab`, listInput$`Final Tocilizumab`)[! c(listInput$`Initial Tocilizumab`, listInput$`Final Tocilizumab`) %in% listInput2$nanostring])
+nortx=unique(c(listInput$`Initial Rituximab`, listInput$`Final Rituximab`)[! c(listInput$`Initial Rituximab`, listInput$`Final Rituximab`) %in% listInput2$nanostring])
+
+cat("TOC features not in nanostring genes (n=", length(notoc), "): ",
+    paste(notoc, collapse=", "), "\n")
+cat("RTX features not in nanostring genes (n=", length(nortx), "): ",
+    paste(nortx, collapse=", "), "\n")
+
+
+```
+
+
+Check for feature set enrichment
+
+```{r, message=FALSE, warning=FALSE, results='hide', echo=FALSE, eval=FALSE}
+library(omicAnnotations)
+library(enrichR)
+
+enrich_list = c(listInput,
+                "Initial Response (Rtx-Toc Overlap)"=
+                  list(intersect(listInput$`Initial Rituximab`, listInput$`Initial Tocilizumab`)),
+                "Final Response (Rtx-Toc-Refractory Overlap)"=
+                  list(intersect(intersect(listInput$`Final Rituximab`, listInput$`Final Tocilizumab`), listInput$Refractory) ))
+
+out = invisible(lapply(enrich_list, function(x) {
+  temp =  suppressMessages(
+    enriched_pathways(as.character(x), cutoff=1, min_N=2,
+                      libraries = c('Pathways', 'Ontologies', 'Diseases_Drugs', 'Cell_Types')))
+
+  edf = temp$enrichment
+  edf = edf[edf$Adjusted.P.value <= 0.05, ]
+  edf = edf[! grepl("LINCS|ARCHS4", edf$Library), ]
+  edf = edf[! grepl("Table", edf$Term), ]
+
+  return(edf)
+}))
+
+names(out) <- names(enrich_list)
+```
+
+
+```{r, results='hide', echo=FALSE, cache=FALSE, eval=FALSE}
+library(RColorBrewer)
+library(ggplot2)
+
+plot.list <- invisible(lapply(names(out), function(x){
+
+  edf = out[[x]]
+  edf = edf[! grepl("DOI|GSE|Gr5|MODULE|GeneList|14d AA|MGS|Murine|gse|Fig|SKIN|table|Complement|vagina|mucus|Top100|microbial|Estrogen|BREAST|uterus|breast|GTEX|cardiac|oxygen|gland", edf$Term), ]
+  edf = edf[! grepl("Mouse", edf$Library), ]
+  edf$Term[grepl("GTEX", edf$Term)] = unlist(lapply(edf$Term[grepl("GTEX", edf$Term)], function(x) {
+    paste("GTEX:", paste(unlist(strsplit(x, " "))[2:(length(unlist(strsplit(x, " ")))-2)], collapse=" "))
+  }))
+  edf = edf[edf$Library != "MGI_Mammalian_Phenotype_2017", ]
+  edf$Term = gsub("RHEUMA SEROPOS OTH", "", edf$Term)
+  edf$Term = gsub("pathway \\(", "pathway\n(", edf$Term)
+  edf$Term = gsub(" and cytokine", "\nand cytokine", edf$Term)
+  edf$Term = gsub(" by antimicrobial", "\nby antimicrobial", edf$Term)
+  edf$Term = gsub("seropositiver", "seropositive r", edf$Term)
+  edf$Term = Hmisc::capitalize(tolower(edf$Term))
+
+  edf = edf[order(edf$P.value, decreasing = T), ]
+  edf = edf[! duplicated(edf$Term), ]
+  edf$Term = factor(edf$Term, levels=as.character(edf$Term))
+  edf = edf[edf$P.value <= 0.01, ]
+
+  edf$logP = -log10(edf$P.value)
+
+  df = data.frame(table(unlist(strsplit(tolower(edf$Term), " "))))
+  df = df[! df$Var1 %in% tm::stopwords("en"), ]
+
+  if(class(df) != "integer" ){
+    wordcloud::wordcloud(words = gsub("\n|\\:", "", df$Var1), freq = df$Freq, min.freq = 2,
+                         max.words=200, random.order=FALSE, rot.per=0.5, use.r.layout = T,
+                         scale=c(2, 0.5),
+                         #fixed.asp = F,
+                         colors=brewer.pal(8, "Dark2"))
+    wc <<- recordPlot()
+
+    enrich=ggplot(edf, aes(x=logP, y=Term, fill=Combined.Score)) +
+      geom_bar(stat="identity") + theme_classic() +
+      labs(x=expression(-log[10]*'(P)'), y="", title=x) +
+      scale_fill_continuous(low="red", high="midnightblue", limits=c(0, 2700)) +
+      geom_vline(xintercept = 2, lty="dashed")
+
+    return(list(enrich, wc))
+  }
+}))
+```
+
+```{r, fig.height=20, fig.width=14, cache=FALSE, eval=FALSE}
+cowplot::plot_grid(plotlist=unlist(plot.list, recursive = F), align="hv",
+                   hjust = 0, vjust = 1, ncol=2, nrow=6, rel_widths = c(5, 1))
+
+# output to pdf
+pdf("/media/gcpeac/R4RA_machine_learning/Data/feature_enrichment.pdf", height=25, width=15)
+
+ggarrange(plotlist = unlist(plot.list, recursive=F)[seq(1, length(unlist(plot.list, recursive=F)), 2)],
+          ncol=2, nrow=3, align="hv", common.legend = T)
+dev.off()
+```
+
+
+
+# Output Results
+
+```{r}
+save_output = FALSE
+library(openxlsx)
+
+if(save_output){
+  save.image("/media/gcpeac/R4RA_machine_learning/Data/best_models_da.rdata")
+  
+  # save the tuning parameters for the optimal models
+  models_list = list("Initial Rituximab"=rtx_bl_other_filt_plots[[1]],
+                     "Initial Tocilizumab"=toc_bl_other_filt_plots[[1]],
+                     
+                     # "Final Rituximab"=rtx_other_filt_plots[[5]],
+                     # "Final Tocilizumab"=toc_other_filt_plots[[1]],
+                     "Refractory"=any_other_filt_plots[[1]]
+  )
+  names(models_list) = paste(names(models_list), "-",
+                             unlist(lapply(models_list, function(x) x$fit$method)))
+  write.xlsx(x = lapply(models_list, function(x) x$bestTune),
+             rowNames=TRUE, overwrite = T,
+             file = "/media/gcpeac/R4RA_machine_learning/Data/best_tune_fits.xlsx")
+  
+  
+  # save features (by importance/coefficients)
+  write.xlsx(x = lapply(models_list, function(x) {
+    if(class(x$coefficients$data) != "waiver"){
+      df = x$coef[, c("gene", "coef")]
+      df = df[df$coef != 0, ]
+      colnames(df) = c("Feature", "Coefficients")
+      return(df)
+    } else{
+      df = x$vi[, c("gene", "Overall")]
+      colnames(df) = c("Feature", "Variable Importance")
+      return(df)
+    }
+  }),
+  rowNames=FALSE, overwrite = T,
+  file = "/media/gcpeac/R4RA_machine_learning/Data/coef_vi.xlsx")
+  
+  
+  # output model summaries
+  cs = c('model', 'filtering', 'drug','AUC', 
+         'Accuracy', 'final_k', 'sparce_k', 
+         'Precision', 
+         'Youden_sensitivity', 'Youden_specificity')
+  
+  di = df_initial_response[, cs]
+  di$drug = c("rtx"="Rituximab", "toc"="Tocilizumab", "any"="Refractory")[di$drug]
+  di$filtering = c("uni"="Univariate", "none"="None")[di$filtering]
+  di[, apply(di, 2, function(x) {all(! is.na(as.numeric(x)))})] =
+    apply(di[, apply(di, 2, function(x) {all(! is.na(as.numeric(x)))})], 2,
+          function(y) format(as.numeric(y), digits=3))
+  colnames(di)[grepl("_k", colnames(di))] = c("Number of input features", 
+                                              "Number of sparse output features")
+  colnames(di) = Hmisc::capitalize(colnames(di))
+  
+  df = df_final_response[, cs]
+  df$drug = c("rtx"="Rituximab", "toc"="Tocilizumab", "any"="Refractory")[df$drug]
+  df$filtering = c("uni"="Univariate", "none"="None")[df$filtering]
+  df[, apply(df, 2, function(x) {all(! is.na(as.numeric(as.character(x))))})] =
+    apply(df[, apply(df, 2, function(x) {all(! is.na(as.numeric(as.character(x))))})], 2,
+          function(y) format(as.numeric(y), digits=3))
+  colnames(df)[grepl("_k", colnames(df))] = c("Number of input features", 
+                                              "Number of sparse output features")
+  colnames(df) = Hmisc::capitalize(colnames(df))
+  df = df[df$Drug == "Refractory", ] 
+  
+  
+  out = rbind(di, df)
+  out = out[c(which(out$Drug == "Rituximab"), 
+              which(out$Drug == "Tocilizumab"), 
+              which(out$Drug == "Refractory")), ]
+  colnames(out) = gsub("_", " ", colnames(out))
+  
+  write.xlsx(x = out, #list("Initial response"=di, "Final response"=df),
+             rowNames=FALSE, overwrite = T,
+             file = "/media/gcpeac/R4RA_machine_learning/Data/all_models.xlsx")
+}
+
+```
