@@ -1,7 +1,5 @@
 ## explore drivers of variation in data
 
-setwd("/Users/asurace/Documents/GC-PEAC/Desktop/R4RA")
-
 library(bioplotr)
 library(dplyr)
 library(edgeR)
@@ -48,8 +46,6 @@ colnames(meta2)[colnames(meta2)=='CDAI.response.status.V7'] <- 'CDAI 50% improve
 
 data <- data[,meta2$Seq_ID.V2]
 
-library(purrr)
-library(ggplot2)
 p <- plotdrivers(data, meta2, label=TRUE, n.pc=10, p.adj = NULL, alpha = 0.05)
 p ## non adjusted p-value
 
