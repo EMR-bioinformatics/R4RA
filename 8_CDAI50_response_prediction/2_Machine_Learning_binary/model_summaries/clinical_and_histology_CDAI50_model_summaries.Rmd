@@ -144,18 +144,17 @@ outputs <- function(model){
   tvst$resp = factor(clinical$CDAI50_toc_resp, labels=c("NR", "R"))
   tvst = tvst[! is.na(tvst$resp), ]
   
-  train_control <- trainControl(method="repeatedcv",
-                                number=5,
-                                repeats=1,
-                                classProbs = T,
-                                savePredictions = TRUE)
+   # train and fit on entire data set
+  train_control <- trainControl(method="none",
+                                classProbs = TRUE,
+                                savePredictions = TRUE, 
+                                number=1, 
+                                repeats = 1)
   
   
+  # no filtering for clinical & histology
   subdata = tvst
   subdata = subdata[complete.cases(subdata), ]
-  
-  
-  
   
   # degree must be an integer
   if("degree" %in% colnames(bestTune)){
@@ -170,45 +169,7 @@ outputs <- function(model){
                       trControl = train_control,
                       tuneGrid = bestTune["Average", , drop=F],
                       preProcess=NULL)
-  
-  accuracy_lo = fit$results
-  accuracy_lo = accuracy_lo$Accuracy
-  lo_df = fit$pred
-  auc_lo = auc(lo_df$obs, lo_df$R, levels=c("NR", "R"), direction="<")
-  
-  
-  test_fit <- predict(fit, newdata=tvst, type="prob")
-  test_fit$predicted = predict(fit, newdata=tvst)
-  test_fit$observed = subdata$"resp"
-  
-  ptest = predict(fit, newdata=tvst)
-  names(ptest) = rownames(subdata)
-  
-  
-  conf <- confusionMatrix(lo_df$pred, lo_df$obs)
-  
-  
-  cm = data.frame(conf$table)
-  cm = data.frame("TP"=cm$Freq[cm$Prediction == "R" & cm$Reference == "R"],
-                  "FP"=cm$Freq[cm$Prediction == "R" & cm$Reference == "NR"],
-                  "TN"=cm$Freq[cm$Prediction == "NR" & cm$Reference == "NR"],
-                  "FN"=cm$Freq[cm$Prediction == "NR" & cm$Reference == "R"]
-  )
-  
-  
-  data_output <- data.frame(fit$method,  auc_lo, accuracy_lo,
-                            t(data.frame(conf$overall)),
-                            t(data.frame(conf$byClass)), cm)
-  
-  colnames(data_output)[1:3] <- c("model", "AUC", "Accuracy")
-  
-  
-  cat("\n\n\n ### Model Evaluation (on Entire Set!)\n")
-  print(kable(t(data_output), rownames=FALSE) %>% kable_styling())
-  
-  
-  
-  
+
   vi = varImp(fit)
   vi =  data.frame(as.matrix(vi$importance))
   colnames(vi)[1] = "Overall"
@@ -402,7 +363,7 @@ plot.list = list(
   bio_facet(text = "Tocilizumab", angle=0, size=7), 
   bio_facet(text = "Refractory", angle=0, size=7),
   
-    # Plots  
+  # Plots  
   bio_facet(text = "Test ROC", size=7), 
   out_rtx[[1]]+ labs(title=names[out_rtx$fit$method]) + theme_tr, 
   out_toc[[1]]+ labs(title=names[out_toc$fit$method]) + theme_tr, 
@@ -507,6 +468,29 @@ out_rtx_bl=outputs(t_nested_bl$CDAI50_rtx_resp_svmRadial)
 ## {.toc-ignore}
 
 ```{r, fig.height=18}
+roc_ci <- function(roc_plot, ci=0.9){
+  obs_name = ifelse("observed" %in% colnames(roc_plot$data), "observed", "obs")
+  rc = roc(response=roc_plot$data[, obs_name], predictor=roc_plot$data$R, direction="<")
+  
+  ci.obj <- cbind(ci.sp(rc, sensitivities = rc$sensitivities, boot.n=100, conf.level=ci), 
+                  ci.se(rc, specificities = rc$specificities, boot.n=100, conf.level=ci))
+  ci.df = data.frame(ci.obj)
+  colnames(ci.df) = c("sp.low", "sp.median", "sp.high", 
+                      "se.low", "se.median", "se.high")
+  ci.df$y = rc$sensitivities
+  ci.df$x = rc$specificities
+  
+  # To report the CI on the AUC (can be a bit much for plots)
+  #auc = as.character(format(ci.auc(rc, conf.level=ci), digits=3))
+  #roc_plot$layers[[3]]$aes_params$label = paste0("AUC = ", auc[2], " (", auc[1], "-", auc[3], ")")
+  
+  roc_plot + 
+    geom_ribbon(data=ci.df, aes(x=1-x, xmin=1-sp.high, xmax=1-sp.low, 
+                    y=y, ymin=se.high, ymax=se.low), 
+                alpha=0.1, inherit.aes = F) 
+}
+
+
 plot.list = list(
   # titles
   bio_facet(text = "", colour="white", angle=0), 
@@ -514,29 +498,38 @@ plot.list = list(
   bio_facet(text = "Tocilizumab", angle=0, size=7), 
   bio_facet(text = "Refractory", angle=0, size=7),
   
-    # Plots  
+  # Plots  
   bio_facet(text = "Test ROC", size=7), 
-  out_rtx_bl[[1]]+ labs(title=names[out_rtx_bl$fit$method]) + theme_tr, 
-  out_toc_bl[[1]]+ labs(title=names[out_toc_bl$fit$method]) + theme_tr, 
-  out_any[[1]]+ labs(title=names[out_any$fit$method]) + theme_tr, 
-  bio_facet(text = "Left-Out ROC", size=7), 
-  out_rtx_bl[[2]]+ labs(title=NULL) + theme_tr, 
-  out_toc_bl[[2]]+ labs(title=NULL) + theme_tr, 
-  out_any[[2]]+ labs(title=NULL) + theme_tr, 
+  roc_ci(out_rtx_bl[[1]]) + labs(title=names[out_rtx_bl$fit$method]) + theme_tr, 
+  roc_ci(out_toc_bl[[1]]) + labs(title=names[out_toc_bl$fit$method]) + theme_tr, 
+  roc_ci(out_any[[1]]) + labs(title=names[out_any$fit$method]) + theme_tr, 
+  bio_facet(text = "Left-Out Inner Fold ROC", size=7), 
+  roc_ci(out_rtx_bl[[2]]) + labs(title=NULL) + theme_tr, 
+  roc_ci(out_toc_bl[[2]]) + labs(title=NULL) + theme_tr, 
+  roc_ci(out_any[[2]]) + labs(title=NULL) + theme_tr, 
   bio_facet(text = "Variable Importance", size=7), 
   out_rtx_bl[[3]]+ labs(title=NULL) + theme_tr+theme(axis.text=element_text(size=12)), 
   out_toc_bl[[3]]+ labs(title=NULL) + theme_tr+theme(axis.text=element_text(size=12)), 
   out_any[[3]]+ labs(title=NULL) + theme_tr+theme(axis.text=element_text(size=12))
-  )
+)
 
+w = 1.7*8.25
+h = 0.8*1.7*11.75
+hs = c(0.15, 1, 1, 1.8)
+hs = hs/sum(hs)
+y = hs[1]*h/w
+ws = c(y, 1/(y+3), 1/(y+3), 1/(y+3))
 
-p = ggarrange(plotlist = plot.list, ncol=4, nrow=4, #align="hv",
-              widths=c(0.15, 1, 1, 1), heights=c(0.15,  1.2, 1, 1.5))
+p =  ggarrange(plotlist = plot.list, ncol=4, nrow=4, widths=ws, heights=hs)
 
-cairo_pdf("/media/gcpeac/R4RA_machine_learning/Data/Initial_resp_clinical_fig.pdf", height=0.8*0.8*v*1.7*11.75, width=0.8*1.7*8.25)
+cairo_pdf("/media/gcpeac/R4RA_machine_learning/Data/Initial_resp_clinical_fig_with_ci.pdf", 
+          height=0.8*1.7*11.75, width=1.7*8.25)
 p
 dev.off()
 
 p
+
+
+save("/media/gcpeac/R4RA_machine_learning/Data/clinical_histological_objects.rdata")
 ```
 
