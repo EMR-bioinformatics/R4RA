@@ -1,6 +1,5 @@
 ## explore drivers of variation in data
 
-library(bioplotr)
 library(dplyr)
 library(edgeR)
 library(ggplot2)
