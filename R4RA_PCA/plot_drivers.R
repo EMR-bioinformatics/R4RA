@@ -29,10 +29,9 @@ meta <- subset(meta, meta$Seq_ID.V2 %in% colnames(data))
 
 
 
-meta2 <- meta[,c('TJC','SJC','ESR','CRP', 'Arthritis.Activity',
-                 'CDAI.response.status.V7', 'Gender','Age','Ethnicity',
-                 'CCP_status.V1','RF_status.V1', 
-                'Cell.Type.V2','Pathotype.V2')]
+meta2 <- meta[,c('TJC','SJC', 'ESR', 'CRP',
+                 'Pathotype.V2','Gender','Age', 'Ethnicity',
+                 'Cell.Type.V2','CCP_status.V1', 'RF_status.V1', 'CDAI.response.status.V7')]
 
 colnames(meta2)[colnames(meta2)=='Pathotype.V2'] <- 'Pathotype'
 colnames(meta2)[colnames(meta2)=='Cell.Type.V2'] <- 'Cell Type'
