@@ -29,18 +29,15 @@ meta <- subset(meta, meta$Seq_ID.V2 %in% colnames(data))
 
 
 
-meta2 <- meta[,c('TJC','SJC','ESR','CRP', 'Arthritis.Activity','HAQ.Score',
-                 'CDAI.response.status.V7', 'DAS28.ESR.EULARresp.V7','DAS28.CRP.EULARresp.V7', 'Gender','Age','Ethnicity',
-                 'CCP_status.V1','RF_status.V1', 'AST', 'ALT', 
-                'Cell.Type.V2','Pathotype.V2','CD20.V2', 'CD21.V2', 'CD138.V2', 'CD3.V2', 'CD68L.V2')]
+meta2 <- meta[,c('TJC','SJC','ESR','CRP', 'Arthritis.Activity',
+                 'CDAI.response.status.V7', 'Gender','Age','Ethnicity',
+                 'CCP_status.V1','RF_status.V1', 
+                'Cell.Type.V2','Pathotype.V2')]
 
 colnames(meta2)[colnames(meta2)=='Pathotype.V2'] <- 'Pathotype'
 colnames(meta2)[colnames(meta2)=='Cell.Type.V2'] <- 'Cell Type'
-colnames(meta2)[colnames(meta2)=='DAS28.CRP.EULARresp.V7'] <- 'DAS28 CRP EULAR'
-colnames(meta2)[colnames(meta2)=='DAS28.ESR.EULARresp.V7'] <- 'DAS28.ESR.EULAR'
 colnames(meta2)[colnames(meta2)=='CCP_status.V1'] <- 'CCP_status'
 colnames(meta2)[colnames(meta2)=='RF_status.V1'] <- 'RF_status'
-colnames(meta2)[colnames(meta2)=='Target.CDAI.response.V7'] <- 'CDAI MTR'
 colnames(meta2)[colnames(meta2)=='CDAI.response.status.V7'] <- 'CDAI 50% improvement'
 
 
