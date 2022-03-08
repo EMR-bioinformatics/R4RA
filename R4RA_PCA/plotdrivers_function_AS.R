@@ -68,7 +68,7 @@ plotdrivers <- function(pcs,
     theme(plot.title = element_text(hjust = 0.5), 
           axis.text.x = element_text(hjust = 0.5))
   if (label) {
-    p <- p + geom_text(aes(label = round(Association, 1L)), size =3)
+    p <- p + geom_text(aes(label = round(Association, 2L)), size =3)
   }
   return(p)
 }
