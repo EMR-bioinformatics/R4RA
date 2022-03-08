@@ -1,0 +1,596 @@
+---
+title: "R4RA response metrics"
+output:
+ html_document: 
+  code_folding: hide
+  toc: yes
+  toc_float:
+      toc_collapsed: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning=FALSE, cache=FALSE,
+                      dev.args=list(bg="transparent"), fig.width=14)
+```
+
+# Set up the data
+
+* Load packages
+
+```{r, message=FALSE, warning=FALSE, cache=FALSE}
+library(ggplot2)
+library(ggalluvial)
+library(ggrepel)
+library(kableExtra)
+library(gtable)
+```
+
+* Load in curated data
+
+| Week | Visit |
+|-|-|
+| 0 (baseline) | 3 |
+| 16 | 7 |
+| 48 | 15 |
+| 96 | 17 |
+
+```{r}
+load("/media/gcpeac/R4RA_machine_learning/Data/curated_input.rdata")
+```
+
+* Check out the response metrics
+
+```{r}
+resp_metric = gsub("\\.Before", "", colnames(clinical)[grepl("Before", colnames(clinical))])
+resp_metric = resp_metric[! grepl("rem", resp_metric)]
+```
+
+The response metrics we are interested in are: `r cat(resp_metric)`
+
+# Binary Response
+
+## Look for biases
+
+```{r, fig.height=7}
+df = clinical[, paste(rep(resp_metric, each=3), c("any", "toc", "rtx"), 
+                      rep("resp", 3*length(resp_metric)), sep="_")]
+clinical_long = tidyr::gather(df, metric, response, colnames(df), factor_key=TRUE)
+clinical_long$metric = gsub("\\_resp.*", "", clinical_long$metric)
+clinical_long$drug = Hmisc::capitalize(gsub(".*\\_", "", clinical_long$metric))
+clinical_long$metric = gsub("\\_.*", "", clinical_long$metric)
+
+clinical_counts = plyr::count(clinical_long, c("metric", "response", "drug"))
+clinical_counts = clinical_counts[! is.na(clinical_counts$response), ]
+clinical_counts = clinical_counts[order(clinical_counts$freq), ]
+
+clinical_counts$drug = factor(clinical_counts$drug, labels=c("Either", "Rituximab", "Tocilizumab"))
+clinical_counts$metric = gsub(" low", "", gsub("\\.", " ", clinical_counts$metric))
+clinical_counts$metric[clinical_counts$metric == "DAS28 CRP EULAR bin2"] = "EULAR CRP (bin 2)"
+clinical_counts$metric[clinical_counts$metric == "DAS28 CRP EULAR bin"] = "EULAR CRP (bin 1)"
+clinical_counts$metric[clinical_counts$metric == "DAS28 ESR EULAR bin2"] = "EULAR ESR (bin 2)"
+clinical_counts$metric[clinical_counts$metric == "DAS28 ESR EULAR bin"] = "EULAR ESR (bin 1)"
+clinical_counts$metric[clinical_counts$metric == "CDAI50"] = "CDAI 50"
+
+p = ggplot(clinical_counts, aes(x=metric, y=freq, fill=factor(response))) + 
+  geom_bar(position="fill", stat="identity") +
+  facet_wrap(~ factor(drug)) +
+  scale_fill_manual(values=c("white", "#00ace6")) +
+  theme_bw() +
+  labs(x="", y="Fraction Responders", fill="Response") +
+  theme_classic() + 
+  theme(axis.title = element_text(size=15), 
+        axis.text=element_text(size=12),
+        strip.text.x = element_text(size = 15, colour="white", face="bold"),
+        axis.text.x=element_text(angle=-45, hjust=0), 
+        legend.position="none", 
+        plot.margin = unit(c(0,2.5,0,0), "cm")) + 
+  geom_hline(yintercept = 0.5, linetype="dashed", colour="black", size=1)
+
+g <- ggplot_gtable(ggplot_build(p))
+stripr <- which(grepl('strip', g$layout$name))
+fills <- c("green3", "red", "blue")
+k <- 1
+for (i in stripr) {
+  j <- which(grepl('rect', g$grobs[[i]]$grobs[[1]]$childrenOrder))
+  g$grobs[[i]]$grobs[[1]]$children[[j]]$gp$fill <- fills[k]
+  g$grobs[[i]]$grobs[[1]]$children[[j]]$gp$col <- fills[k]
+  k <- k+1
+}
+grid::grid.draw(g)
+```
+
+## Summed Response
+
+There are a lot of differences between these metrics. If you sum them together:
+
+```{r}
+clinical$summed_toc_resp = rowSums(clinical[, grepl("toc_resp", colnames(clinical))], na.rm=T)
+clinical$summed_rtx_resp = rowSums(clinical[, grepl("rtx_resp", colnames(clinical))], na.rm=T)
+clinical$summed_any_resp = rowSums(clinical[, grepl("any_resp", colnames(clinical))], na.rm=T)
+
+df = clinical[, grepl("summed", colnames(clinical))]
+df = df[order(df$summed_rtx_resp), ]
+df = df[order(df$summed_any_resp), ]
+df$pat = 1:nrow(df)
+df2 = reshape2::melt(df[, colnames(df) != "summed_any_resp"], id.vars=c("pat"))
+
+ggplot(df, aes(y=summed_any_resp, x=pat)) + 
+  geom_line() +
+  geom_jitter(data=df2, height=0.05, width=0, aes(y=value, x=pat, colour=variable), 
+              colors=c("red", "blue"), show.legend=T) +
+  theme_classic() +
+  theme(axis.ticks.x = element_blank(), axis.text.x = element_blank(), 
+        axis.title = element_text(size=15)) +
+  labs(y="Sum of response across all metrics", x="Patients")
+```
+
+Ideally we would have all 0 or all 8 for complete overlap in response categories. 
+
+## Response to randomised drugs {.tabset .tabset-fade}
+
+```{r}
+cat("Patients who dropped out after visit 2:", 
+    paste0(response_df$Patient_ID[response_df$Second.medication == "Dropped out"], 
+           collapse=", "))
+```
+
+For the EULAR bin 2 there are some patients who do switch but with no response info for the second time point - these are treated the same as no resp didnt switch. 
+
+```{r, fig.width=9, results='asis'}
+resp = gsub("overall_response_", "", 
+            colnames(response_df)[grepl("overall_response", 
+                                        colnames(response_df))])
+
+options=list(
+  "R4RA"=c("R4RA", "grey"),
+  "Rituximab"=c("Rituximab", "red"), 
+  "Tocilizumab"=c("Tocilizumab", "blue"),
+  
+  "RNR_NoInfo"=c("RTX Non Responder \n(didn't switch)", "green3"),
+  "RNR_Droppedout"=c("RTX Non responder", "grey"),
+  
+  "RR"=c("Rituximab Responder", "red"),
+  
+  "TNR_RR"=c("RTX Responder \n(TOC non responder)", "red"),
+  "RR_TNR"=c("RTX Responder \n(TOC non responder)", "red"),
+  
+  "Neither"=c("Neither", "green"),
+  "Both"=c("Responded to both", "white"),
+  
+  "RNR_TR"=c("TOC Responder \n(RTX non responder)", "blue"),
+  "TR_RNR"=c("TOC Responder \n(RTX non responder)", "blue"),
+  
+  "TR"=c("Tocilizumab Responder", "blue"),
+  
+  "TNR_NoInfo"=c("TOC Non Responder \n(did't switch)", "green3"),
+  "TNR_Droppedout"=c("TOC Non responder", "grey"),
+  "TR_Droppedout"=c("TOC responder", "blue")
+  
+)
+
+rev.options = lapply(1:length(options), function(x) options[[x]][2])
+names(rev.options) = lapply(options, "[[", 1)
+
+for(i in resp){
+  cat('\n')
+  cat('###', i, '\n')
+  wide = response_df[, c(paste0("overall_response_", i),  "Second.medication",  
+                         "Initial.medication", "Patient_ID")]
+  long <- tidyr::gather(wide, timepoint, medication, Initial.medication, 
+                        Second.medication, factor_key=TRUE)
+  
+  long = rbind(data.frame("condition"="R4RA", "timepoint"="Baseline", 
+                          "subject"=wide$Patient_ID),
+               data.frame("condition"=wide$Initial.medication, 
+                          "timepoint"="Visit 3", "subject"=wide$Patient_ID),
+               data.frame("condition"=wide$Second.medication, 
+                          "timepoint"="Visit 7", "subject"=wide$Patient_ID),
+               data.frame("condition"=wide[, paste0("overall_response_", i)], 
+                          "timepoint"="End", "subject"=wide$Patient_ID))
+  
+  long = long[! grepl("Drop", long$condition), ]
+  long = data.frame(table(long))
+  long = long[long$Freq!=0, ]
+  
+  temp = options[names(options) %in% levels(long$condition)]
+  long$condition = factor(droplevels(long$condition),
+                          labels = unlist(lapply(levels(droplevels(long$condition)), 
+                                                 function(x) options[[x]][1])))
+  
+  long$condition = factor(long$condition, 
+                          levels = unique(unlist(lapply(temp, "[[", 1)))) 
+  
+  
+  rtx.na = names(which(table(long$subject) != 4))
+  toc.na = rtx.na[rtx.na %in% long$subject[long$condition == "Tocilizumab"]]
+  rtx.na = rtx.na[rtx.na %in% long$subject[long$condition == "Rituximab"]]
+  
+  
+  g = ggplot(long,
+             aes(x = timepoint, stratum = condition, alluvium = subject, 
+                 label=Freq, y = Freq, fill = condition)) +
+    scale_x_discrete(expand = c(.1, .1)) +
+    geom_flow(color="white") +
+    geom_stratum(alpha = .7) +
+    geom_text(aes(label = condition), stat = "stratum", size = 3) +
+    geom_text(aes(label = Freq), stat = "flow", nudge_x = 0.2)
+  
+  
+  newdat <- layer_data(g)
+  newdat = newdat[newdat$flow == "from", ]
+  split <- split(newdat, interaction(newdat$stratum, newdat$x))
+  newdat <- do.call(rbind, split)
+  
+  newdat$xmin[newdat$x==2] = 1.6
+  newdat$label = newdat$n
+  
+  
+  sankey <- ggplot(long,
+                   aes(x = timepoint, stratum = condition, alluvium = subject,
+                       y = Freq, fill = condition, color = condition)) +
+    scale_x_discrete(expand = c(.1, .1)) +
+    geom_flow(color="black", aes.flow="backward", alpha = .25, na.rm=T) +
+    geom_stratum(alpha = .7, min.y=1, color="black") +
+    geom_text(data=long[long$timepoint != "End", ], aes(label = condition), 
+              angle =90, stat = "stratum", size = 4, color="black") +
+    geom_text_repel(data=long[long$timepoint == "End", ],
+                    aes(label = condition),  xlim  = c(4.2, NA), hjust=0, 
+                    fill=NA, stat = "stratum", size = 4, direction = "y", 
+                    nudge_x = .5, color="black"
+    ) +
+    geom_text(data = newdat, aes(x = xmin + 0.5, y = y, hjust=-1,
+                                 label = format(label, digits = 1)),
+              inherit.aes = FALSE, color="black") +
+    theme_classic() +
+    theme(axis.line = element_blank(),
+          panel.background = element_rect(fill = "transparent"),
+          plot.background = element_rect(fill = "transparent", color = NA),
+          axis.text.y = element_blank(),
+          axis.text.x = element_text(color="black"),
+          axis.ticks = element_blank(), legend.position="none") +
+    labs(y="", x="") + scale_x_discrete(expand = c(0,1.5)) +
+    scale_fill_manual(values=unlist(rev.options[levels(long$condition)])) +
+    scale_color_manual(values=unlist(rev.options[levels(long$condition)]))
+  
+  print(sankey)
+  cat('\n')
+}
+```
+
+## Extreme groups {.tabset .tabset-fade}
+
+```{r, fig.width=9, results='asis'}
+extreme.options = rev.options
+extreme.options[names(extreme.options) %in% 
+                  c("Tocilizumab Responder", "Rituximab Responder",  
+                    "RTX Non Responder \n(didn't switch)", 
+                    "TOC Non Responder \n(didn't switch)", 
+                    "TOC Non Responder \n(did't switch)")] = "grey"
+
+for(i in resp){
+  cat('\n')
+  cat('###', i, '\n')
+  wide = response_df[, c(paste0("overall_response_", i),  "Second.medication",  
+                         "Initial.medication", "Patient_ID")]
+  long <- tidyr::gather(wide, timepoint, medication, Initial.medication, 
+                        Second.medication, factor_key=TRUE)
+  
+  long = rbind(data.frame("condition"="R4RA", "timepoint"="Baseline", 
+                          "subject"=wide$Patient_ID),
+               data.frame("condition"=wide$Initial.medication, 
+                          "timepoint"="Visit 3", "subject"=wide$Patient_ID),
+               data.frame("condition"=wide$Second.medication, 
+                          "timepoint"="Visit 7", "subject"=wide$Patient_ID),
+               data.frame("condition"=wide[, paste0("overall_response_", i)], 
+                          "timepoint"="End", "subject"=wide$Patient_ID))
+  
+  long = long[! grepl("Drop", long$condition), ]
+  long = data.frame(table(long))
+  long = long[long$Freq!=0, ]
+  
+  temp = options[names(options) %in% levels(long$condition)]
+  long$condition = factor(droplevels(long$condition),
+                          labels = unlist(lapply(levels(droplevels(long$condition)), 
+                                                 function(x) options[[x]][1])))
+  
+  long$condition = factor(long$condition, levels = 
+                            unique(unlist(lapply(temp, "[[", 1)))) 
+  
+  
+  rtx.na = names(which(table(long$subject) != 4))
+  toc.na = rtx.na[rtx.na %in% long$subject[long$condition == "Tocilizumab"]]
+  rtx.na = rtx.na[rtx.na %in% long$subject[long$condition == "Rituximab"]]
+  
+  
+  
+  
+  g = ggplot(long,
+             aes(x = timepoint, stratum = condition, alluvium = subject, 
+                 label=Freq, y = Freq, fill = condition)) +
+    scale_x_discrete(expand = c(.1, .1)) +
+    geom_flow(color="white") +
+    geom_stratum(alpha = .7) +
+    geom_text(aes(label = condition), stat = "stratum", size = 3) +
+    geom_text(aes(label = Freq), stat = "flow", nudge_x = 0.2)
+  
+  
+  newdat <- layer_data(g)
+  newdat = newdat[newdat$flow == "from", ]
+  split <- split(newdat, interaction(newdat$stratum, newdat$x))
+  newdat <- do.call(rbind, split)
+  
+  newdat$xmin[newdat$x==2] = 1.6
+  newdat$label = newdat$n
+  
+  levs = levels(long$condition)
+  levs[levs == "RTX Responder \n(TOC non responder)"] = "Pro RTX"
+  levs[levs == "TOC Responder \n(RTX non responder)"] = "Pro TOC"
+  long$condition2 = as.character(factor(long$condition, labels=levs))
+  long$condition2[grepl("Responder", long$condition2)] = ""
+  
+  sankey <- ggplot(long,
+                   aes(x = timepoint, stratum = condition, alluvium = subject,
+                       y = Freq, fill = condition, color = condition)) +
+    scale_x_discrete(expand = c(.1, .1)) +
+    geom_flow(color="black", aes.flow="backward", alpha = .25, na.rm=T) +
+    geom_stratum(alpha = .7, min.y=1, color="black") +
+    geom_text(data=long[long$timepoint != "End", ], aes(label = condition), 
+              angle =90, stat = "stratum", size = 4, color="black") +
+    geom_text_repel(data=long[long$timepoint == "End", ],
+                    aes(label = condition2),  xlim  = c(4.2, NA), hjust=0, 
+                    fill=NA, stat = "stratum", size = 4, direction = "y", 
+                    nudge_x = .5, color="black"
+    ) +
+    geom_text(data = newdat, aes(x = xmin + 0.5, y = y, hjust=-1,
+                                 label = format(label, digits = 1)),
+              inherit.aes = FALSE, color="black") +
+    theme_classic() +
+    theme(axis.line = element_blank(),
+          panel.background = element_rect(fill = "transparent"),
+          plot.background = element_rect(fill = "transparent", color = NA),
+          axis.text.y = element_blank(),
+          axis.text.x = element_text(color="black"),
+          axis.ticks = element_blank(), legend.position="none") +
+    labs(y="", x="") + scale_x_discrete(expand = c(0,1.5)) +
+    scale_fill_manual(values=unlist(extreme.options[levels(long$condition)])) +
+    scale_color_manual(values=unlist(extreme.options[levels(long$condition)]))
+  
+  print(sankey)
+  cat('\n')
+}
+```
+
+## {.toc-ignore}
+
+For now we will stick to just CDAI response metrics since these dont include CRP or ESR and are also not biased. 
+
+# Continuous Response
+
+At base line
+
+```{r, fig.height=40}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(forcats)
+library(ggbeeswarm)
+library(ggpubr)
+theme_set(theme_classic())
+
+# Plot
+plot_list = list()
+group_list = list("Joint counts"= list(c('TJC', 'SJC'), "slateblue1"), 
+                  "DAS scores"= list(c('DAS28 CRP', 'DAS28 ESR'), "mediumvioletred"), 
+                  "CDAI"= list(c('CDAI'), "goldenrod1"),
+                  "Blood"= list(c('ESR', 'CRP'), "mediumseagreen"), 
+                  "Histology"= list(c('CD20', 'CD138', 'CD68L', 'CD68SL', 'CD3'), "dodgerblue1"))
+
+data <- cbind(clin_exp, "Randomised.medication"=clinical$Randomized.Medication) %>% 
+  gather(key="text", value="value", 
+         gsub(" ", ".", unlist(lapply(group_list, "[[", 1)))) %>%
+  mutate(text = gsub("\\.", " ", text)) 
+
+for(i in names(group_list)){
+  p <- data[data$text %in% group_list[[i]][[1]], ] %>%
+    mutate(text = fct_reorder(text, value)) %>% # 
+    ggplot( aes(x=Randomised.medication, y=value)) +
+    geom_violin(width=1, size=0.3, fill=group_list[[i]][[2]], 
+                aes(alpha=Randomised.medication)) +
+    geom_quasirandom(width=0.3, color="black") + 
+    theme(legend.position="none", axis.text=element_text(size=15), 
+          strip.text=element_text(size=15)) +
+    facet_grid(rows="text") + 
+    stat_compare_means(angle = 270, hjust=1, vjust=-1, size=5) + 
+    coord_flip() + 
+    xlab("") +
+    ylab(i) 
+  
+  plot_list[[i]] = p
+  
+}
+
+ggarrange(plotlist = plot_list, nrow=length(plot_list), 
+          heights=unlist(lapply(group_list, function(x) length(x[[1]])))+0.3, 
+          align="v")
+```
+
+<details>
+  <summary>For more info on that really high CRP</summary>
+    ```{r, echo=FALSE, eval=TRUE}
+    temp = clinical[which (clin_exp$CRP == 183), ]
+    temp = metadata[metadata$Patient_ID == temp$Patient.I.D., ]
+
+    kable(temp) %>% kable_styling()
+    ```
+</details>
+
+
+
+
+## Changes from baseline
+
+### Visit 7
+
+This refers to the change from baseline so: 
+
+\Delta x = x_(baseline) - x_(V7)
+
+```{r, fig.height=12}
+metadata$Delta.DAS28.ESR.from.baseline.V7 = metadata$DAS28.ESR - metadata$DAS28.ESR.V7 
+metadata$Delta.DAS28.CRP.from.baseline.V7 = metadata$DAS28.CRP - metadata$DAS28.CRP.V7
+metadata$Delta.CDAI.from.baseline.V7 = metadata$CDAI - metadata$CDAI.V7 
+
+
+resp_cont = metadata[, grepl("Randomised", colnames(metadata)) | 
+                       (grepl("Delta", colnames(metadata)) & 
+                          grepl("V7", colnames(metadata)))]
+
+data <- resp_cont %>% 
+  gather(key="text", value="value", 'Delta.CDAI.from.baseline.V7', 
+         'Delta.DAS28.ESR.from.baseline.V7', 
+         'Delta.DAS28.CRP.from.baseline.V7') %>%
+  mutate(text = gsub("\\.", " ",text)) 
+
+# Plot
+plot_list = list()
+group_list = list("DAS scores"= list(c("Delta DAS28 ESR from baseline V7",  
+                                       "Delta DAS28 CRP from baseline V7"), 
+                                     "mediumvioletred"),
+                  "CDAI"= list(c("Delta CDAI from baseline V7"), "goldenrod1")
+)
+
+
+for(i in names(group_list)){
+  p <- data[data$text %in% group_list[[i]][[1]], ] %>%
+    mutate(text = fct_reorder(text, value)) %>% # 
+    ggplot( aes(x=Randomised.medication, y=value)) +
+    geom_violin(width=1, size=0.3, fill=group_list[[i]][[2]], 
+                aes(alpha=Randomised.medication)) +
+    geom_quasirandom(width=0.3, color="black") + 
+    theme(legend.position="none", axis.text=element_text(size=15), 
+          strip.text=element_text(size=15)) +
+    facet_grid(rows="text") + 
+    stat_compare_means(angle = 270, hjust=1, vjust=-1, size=5) + 
+    coord_flip() + 
+    xlab("") +
+    ylab(i) 
+  
+  plot_list[[i]] = p
+}
+
+ggarrange(plotlist = plot_list, nrow=length(plot_list), 
+          heights=unlist(lapply(group_list, function(x) length(x[[1]]))) + 0.3, 
+          align="v")
+```
+
+```{r, fig.height=18}
+metadata$Delta.DAS28.ESR.from.baseline.V7 = metadata$DAS28.ESR - metadata$DAS28.ESR.V7 
+metadata$Delta.DAS28.CRP.from.baseline.V7 = metadata$DAS28.CRP - metadata$DAS28.CRP.V7
+metadata$Delta.CDAI.from.baseline.V7 = metadata$CDAI - metadata$CDAI.V7 
+
+metadata2 = cbind(clinical, metadata[match(clinical$Patient.I.D., metadata$Patient_ID), ])
+
+resp_cont = metadata2[, grepl("CDAI50_", colnames(metadata2)) | 
+                        (grepl("Delta", colnames(metadata2)) & 
+                           grepl("V7", colnames(metadata2)))]
+
+
+
+  data <- resp_cont %>% 
+    gather(key="metric", value="change", 
+           'Delta.CDAI.from.baseline.V7', 
+           'Delta.DAS28.ESR.from.baseline.V7', 
+           'Delta.DAS28.CRP.from.baseline.V7') %>%
+    mutate(metric = gsub("\\.", " ", metric)) 
+  
+  data <- data %>% 
+    gather(key="drug", value="response", 
+           'CDAI50_toc_resp', 'CDAI50_rtx_resp', 'CDAI50_any_resp') 
+  
+  # Plot
+  plot_list = list()
+  group_list = list("DAS scores"= list(c("Delta DAS28 ESR from baseline V7",  
+                                         "Delta DAS28 CRP from baseline V7"), 
+                                       "mediumvioletred"),
+                    "CDAI"= list(c("Delta CDAI from baseline V7"), "goldenrod1")
+  )
+  
+  
+  for(i in names(group_list)){
+    p = data[data$metric %in% group_list[[i]][[1]] & ! is.na(data$response), ] %>%
+      mutate(metric = fct_reorder(metric, change)) %>% # 
+      ggplot( aes(x=factor(drug), y=change)) +
+      geom_violin(width=1, size=0.3, fill=group_list[[i]][[2]], 
+                  aes(alpha=factor(drug))) +
+      geom_quasirandom(width=0.3, color="black") + 
+      theme(legend.position="none", axis.text=element_text(size=15), 
+             strip.text=element_text(size=15)) +
+      facet_grid(rows=c("metric", "response")) + 
+      stat_compare_means(angle = 270, hjust=1, vjust=-1, size=5) + 
+      coord_flip() + 
+      xlab("") +
+      ylab(i) 
+    
+    plot_list[[i]] = p
+  }
+
+
+ggarrange(plotlist = plot_list, nrow=length(plot_list), 
+          heights=unlist(lapply(group_list, function(x) length(x[[1]]))) + 0.3, 
+          align="v")
+```
+
+### Visit 9
+
+This refers to the change from baseline so: 
+
+\Delta x = x_(baseline) - x_(V9)
+
+```{r, fig.height=12}
+metadata$Delta.DAS28.ESR.from.baseline.V9 = metadata$DAS28.ESR - metadata$DAS28.ESR.V9 
+metadata$Delta.DAS28.CRP.from.baseline.V9 = metadata$DAS28.CRP - metadata$DAS28.CRP.V9
+metadata$Delta.CDAI.from.baseline.V9 = metadata$CDAI - metadata$CDAI.V9 
+
+
+resp_cont = metadata[, grepl("Randomised", colnames(metadata)) | (grepl("Delta", colnames(metadata)) & grepl("V9", colnames(metadata)))]
+
+data <- resp_cont %>% 
+  gather(key="text", value="value", 'Delta.CDAI.from.baseline.V9', 
+         'Delta.DAS28.ESR.from.baseline.V9', 
+         'Delta.DAS28.CRP.from.baseline.V9') %>%
+  mutate(text = gsub("\\.", " ",text)) 
+
+# Plot
+plot_list = list()
+group_list = list("DAS scores"= list(c("Delta DAS28 ESR from baseline V9",  
+                                       "Delta DAS28 CRP from baseline V9"), 
+                                     "mediumvioletred"),
+                  "CDAI"= list(c("Delta CDAI from baseline V9"), "goldenrod1")
+)
+
+
+for(i in names(group_list)){
+  p <- data[data$text %in% group_list[[i]][[1]], ] %>%
+    mutate(text = fct_reorder(text, value)) %>% # 
+    ggplot( aes(x=Randomised.medication, y=value)) +
+    geom_violin(width=1, size=0.3, fill=group_list[[i]][[2]], 
+                aes(alpha=Randomised.medication)) +
+    geom_quasirandom(width=0.3, color="black") + 
+    theme(legend.position="none", axis.text=element_text(size=15), 
+          strip.text=element_text(size=15)) +
+    facet_grid(rows="text") + 
+    stat_compare_means(angle = 270, hjust=1, vjust=-1, size=5) + 
+    coord_flip() + 
+    xlab("") +
+    ylab(i) 
+  
+  plot_list[[i]] = p
+}
+
+ggarrange(plotlist = plot_list, nrow=length(plot_list), 
+          heights=unlist(lapply(group_list, function(x) length(x[[1]]))) + 0.3, 
+          align="v")
+```
+
+
+
