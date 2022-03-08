@@ -41,8 +41,6 @@ colnames(meta2)[colnames(meta2)=='RF_status.V1'] <- 'RF_status'
 colnames(meta2)[colnames(meta2)=='CDAI.response.status.V7'] <- 'CDAI 50% improvement'
 
 
-data <- data[,meta2$Seq_ID.V2]
-
 p <- plotdrivers(data, meta2, label=TRUE, n.pc=10, p.adj = NULL, alpha = 0.05)
 p ## non adjusted p-value
 
