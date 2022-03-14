@@ -14,7 +14,7 @@ vst      <- readRDS("txi.R4RA.vst.gene.symbols.RDS")
 
 # NOTE: column "best.trt.V2" in the metadata is the column to be used to 
 # distinguish patients in Pro-RTX, Pro-TOC and Refractory as explained in 
-# Figure 2 g 
+# Figure 3a 
 
 # Restrincting the analysis to protein coding genes and aligning data 
 coding.genes <- read.csv("gene_type.txt", stringsAsFactors = FALSE)[, c(1,2)]
