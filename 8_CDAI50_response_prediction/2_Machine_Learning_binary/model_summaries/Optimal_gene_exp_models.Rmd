@@ -183,12 +183,8 @@ outputs <- function(model, df3, header_level="####"){
   print(kable(bestTune) %>% kable_styling())
   
   # subset to features in any of the outer fit models
-  # all_features = unique(unlist(lapply(mod, function(x) x$selected_features)))
-  # all_features = colnames(exp_sd)[gsub("\\-", ".", colnames(exp_sd)) %in% all_features]
-  # all_features = exp_sd[, all_features]
-  
-  
-  tvst <- data.frame(exp_sd)
+  both_sd = cbind(exp_sd, clin_exp[, clin_cols[! grepl("^CD", clin_cols)]])
+  tvst <- data.frame(both_sd)
   
   ## add response variable
   tvst$resp = factor(clinical$CDAI50_toc_resp, labels=c("NR", "R"))
@@ -285,12 +281,15 @@ outputs <- function(model, df3, header_level="####"){
   
   vie = vi[vi$Overall != 0, ]
   vie$gene = factor(vie$gene, levels=rev(unique(vie$gene)))
+  vie$class = "Gene"
+  vie$class[vie$gene %in% clin_vars] = "Clinical"
   
-  p1 =  ggplot(vie, aes(y=Overall, x=gene)) +
-    geom_bar(stat="identity", fill="midnightblue") +
+  p1 =  ggplot(vie, aes(y=Overall, x=gene, fill=class)) +
+    geom_bar(stat="identity") +
     coord_flip() +
     labs(y="Importance", x="") +
     theme_classic() + 
+    scale_fill_manual(values("Gene"="midnightblue", "Clinical"="goldenrod1")) + 
     theme(text=element_text(size=20), 
           legend.position="none", 
           panel.grid = element_line(colour = "grey92"),
